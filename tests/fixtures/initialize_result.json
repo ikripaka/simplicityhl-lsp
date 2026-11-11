@@ -45,7 +45,10 @@
           "variable",
           "type",
           "keyword",
-          "namespace"
+          "namespace",
+          "comment",
+          "number",
+          "operator"
         ],
         "tokenModifiers": [
           "declaration",

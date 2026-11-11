@@ -1,6 +1,7 @@
 use ropey::Rope;
 use serde_json::Value;
 
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -86,6 +87,7 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn shutdown(&self) -> Result<()> {
         Ok(())
     }
@@ -143,6 +145,7 @@ impl LanguageServer for Backend {
         }
     }
 
+    #[allow(clippy::unused_async_trait_impl)]
     async fn execute_command(&self, _: ExecuteCommandParams) -> Result<Option<Value>> {
         Ok(None)
     }
@@ -206,25 +209,33 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
+        let path = uri.to_file_path();
+        let extension = path.as_deref().and_then(Path::extension);
 
         // .wit files don't have semantic tokens
-        if std::path::Path::new(uri.path().as_str())
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("wit"))
-        {
+        if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("wit")) {
             return Ok(None);
         }
 
-        let documents = self.workspace.read().await;
+        let data = if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("simpl")) {
+            let text = self.workspace.read().await.text(uri);
+            let Some(text) = text else {
+                return Ok(None);
+            };
 
-        // Return None if document not found (e.g., file has parse errors)
-        let Some(doc) = documents.get(uri) else {
-            return Ok(None);
+            crate::semantic_tokens::simplicity_tokens(&text)
+        } else {
+            let documents = self.workspace.read().await;
+            let Some(doc) = documents.get(uri) else {
+                return Ok(None);
+            };
+
+            crate::semantic_tokens::tokens(doc)
         };
 
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
-            data: crate::semantic_tokens::tokens(doc),
+            data,
         })))
     }
 
@@ -606,12 +617,15 @@ impl Backend {
             return;
         };
         let path = path_buf.as_ref();
+        let extension = path.extension();
 
-        // Check if this is a witness file
-        if path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("wit"))
-        {
+        if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("simpl")) {
+            // Ignore `.simpl` files on change and pass them (we enable only textmate analysis).
+            // todo: add on change and validate .simf files like witness or simplicityhl does
+            return;
+        }
+
+        if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("wit")) {
             self.on_change_witness(params).await;
             return;
         }

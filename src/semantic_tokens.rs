@@ -1,4 +1,5 @@
 use miniscript::iter::TreeLike;
+use simplicity::human_encoding::{lex, TokenKind};
 use simplicityhl::error::Span;
 use simplicityhl::parse;
 use tower_lsp_server::lsp_types::{
@@ -10,7 +11,13 @@ use crate::text::span_to_positions;
 
 mod token_type {
     pub const FUNCTION: u32 = 0;
+    pub const VARIABLE: u32 = 2;
+    pub const TYPE: u32 = 3;
+    pub const KEYWORD: u32 = 4;
     pub const NAMESPACE: u32 = 5;
+    pub const COMMENT: u32 = 6;
+    pub const NUMBER: u32 = 7;
+    pub const OPERATOR: u32 = 8;
 }
 
 type RawToken = (u32, u32, u32, u32, u32);
@@ -24,6 +31,9 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::TYPE,
             SemanticTokenType::KEYWORD,
             SemanticTokenType::NAMESPACE,
+            SemanticTokenType::COMMENT,
+            SemanticTokenType::NUMBER,
+            SemanticTokenType::OPERATOR,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
@@ -71,6 +81,55 @@ pub fn tokens(snapshot: &AnalysisSnapshot) -> Vec<SemanticToken> {
     }
 
     encode(raw_tokens)
+}
+
+pub fn simplicity_tokens(source: &str) -> Vec<SemanticToken> {
+    let mut line = 0;
+    let mut column = 0;
+    let mut previous_end = 0;
+
+    encode_sorted(lex(source).filter_map(|(kind, span)| {
+        let token_type = match kind {
+            TokenKind::Comment => token_type::COMMENT,
+            TokenKind::Keyword | TokenKind::Wildcard => token_type::KEYWORD,
+            TokenKind::Jet => token_type::FUNCTION,
+            TokenKind::Number => token_type::NUMBER,
+            TokenKind::Type => token_type::TYPE,
+            TokenKind::Operator => token_type::OPERATOR,
+            TokenKind::Symbol => token_type::VARIABLE,
+            _ => return None,
+        };
+
+        // Advance from the previous token so even long generated lines are scanned once.
+        let mut gap = source[previous_end..span.start].chars().peekable();
+
+        while let Some(ch) = gap.next() {
+            match ch {
+                '\r' if gap.peek() == Some(&'\n') => {}
+                '\r' | '\n' => {
+                    line += 1;
+                    column = 0;
+                }
+                _ => column += ch.len_utf16(),
+            }
+        }
+
+        // The lexer includes the carriage return in a comment on CRLF input.
+        let text = source[span.clone()].split('\r').next()?;
+        let length = text.encode_utf16().count();
+        let start = column;
+
+        column += length;
+        previous_end = span.start + text.len();
+
+        Some((
+            line,
+            start.try_into().ok()?,
+            length.try_into().ok()?,
+            token_type,
+            0,
+        ))
+    }))
 }
 
 fn raw_token(span: &Span, text: &ropey::Rope, token_type: u32, modifiers: u32) -> Option<RawToken> {
@@ -153,7 +212,10 @@ fn call_spans(call: &parse::Call, tokens: &simplicityhl::lexer::Tokens<'_>) -> V
 fn encode(mut tokens: Vec<RawToken>) -> Vec<SemanticToken> {
     tokens.sort_unstable();
     tokens.dedup();
+    encode_sorted(tokens)
+}
 
+fn encode_sorted(tokens: impl IntoIterator<Item = RawToken>) -> Vec<SemanticToken> {
     let mut previous_line = 0;
     let mut previous_character = 0;
     tokens

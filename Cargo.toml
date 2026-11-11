@@ -28,12 +28,17 @@ thiserror = "2.0.17"
 ropey = "1.6.1"
 miniscript = "12"
 nom = "8.0.0"
+simplicity-lang = { version = "0.9.0", features = ["human_encoding"] }
 simplicityhl = { version = "0.8.0", features = ["docs"] }
 
 smplx-build = { version = "0.2.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.23.0"
+
+[patch.crates-io]
+# Use the same local crate for the raw lexer and SimplicityHL.
+simplicity-lang = { path = "../rust-simplicity" }
 
 [profile.release]
 lto = "thin"

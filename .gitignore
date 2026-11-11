@@ -16,3 +16,6 @@ dist/
 
 # lock files
 **/pnpm-lock.yaml
+
+# intellij IDE cache
+/.idea
