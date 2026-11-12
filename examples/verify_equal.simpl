@@ -1,0 +1,4 @@
+-- Verify that two 32-bit words are equal.
+expected := const 0x0000002a : 1 -> 2^32
+matches := comp (pair expected (const 0x0000002a)) jet_eq_32 : 1 -> 2
+main := comp matches jet_verify : 1 -> 1

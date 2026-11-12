@@ -25,6 +25,56 @@ Language Server for [SimplicityHL language](https://simplicity-lang.org/).
 
 - Document formatting with [`simfmt`](https://github.com/BlockstreamResearch/simfmt), the formatter behind `simplex fmt`
 
+- Semantic highlighting for raw Simplicity (`.simpl`) files, including unsaved and
+  incomplete source. See the [first example](#raw-simplicity-example).
+
+## Raw Simplicity example
+
+[`examples/verify_equal.simpl`](examples/verify_equal.simpl) is a small program that
+checks equality of two 32-bit constants. It demonstrates comments, named expressions,
+combinators, constants, jets, and type annotations. The protocol tests parse and
+type-check this same file with `Forest::parse::<Elements>()`, then check highlighting
+through a running language server.
+
+For local VS Code development, use checkouts of `simplicityhl-lsp` and
+`simplicityhl-vscode`.
+
+1. Run `cargo build --locked` in the LSP checkout.
+2. Run `npm ci` and `npm run compile` in the extension checkout.
+3. In a separate VS Code window, set `simplicityhl.server.path` to the absolute path
+   of `simplicityhl-lsp/target/debug/simplicityhl-lsp` (`.exe` on Windows). For an
+   isolated setup, use a temporary `.code-workspace` file with these settings:
+
+   ```json
+   {
+     "folders": [{ "path": "/absolute/path/to/simplicityhl-lsp" }],
+     "settings": {
+       "simplicityhl.server.path": "/absolute/path/to/simplicityhl-lsp/target/debug/simplicityhl-lsp",
+       "simplicityhl.disableAutoupdate": true
+     }
+   }
+   ```
+
+4. Launch that workspace with the local extension:
+
+   ```sh
+   code --new-window --extensionDevelopmentPath=/absolute/path/to/simplicityhl-vscode /absolute/path/to/example.code-workspace
+   ```
+
+5. Open `examples/verify_equal.simpl`. The language mode should be **Simplicity**.
+   Use **Developer: Inspect Editor Tokens and Scopes** to inspect a jet (`function`),
+   a combinator (`keyword`), or a named expression (`variable`); colors depend on the
+   theme. Insert a blank line or an unfinished `(` without saving and confirm that
+   highlighting follows the buffer. Undo the edits, close, and reopen the file.
+6. Temporarily set `"[simplicity]": { "editor.semanticHighlighting.enabled": false }`
+   in the workspace settings to check the extension's TextMate highlighting, then
+   remove that override to restore semantic highlighting.
+
+This initial `.simpl` support is highlighting only. Diagnostics, completion,
+compilation commands, witness execution, and calling raw Simplicity from SimplicityHL
+are not implemented. A misspelled jet or unequal constants will not produce an editor
+error. Syntax coloring does not imply that the program is valid or that it succeeds.
+
 ## Configuration
 
 Editors send settings under the `simplicityhl` section. Every field is optional; the
@@ -134,7 +184,8 @@ vim.lsp.enable("simplicityhl-lsp")
 
 #### Tree-sitter (Highlighting)
 
-Currently, the Language Server does not provide any syntax highlighting on its own, but you can install tree-sitter for SimplicityHL:
+For broader syntax highlighting of SimplicityHL (`.simf`) alongside the language
+server's semantic tokens, you can install tree-sitter:
 
 0. Set up the [`nvim-treesitter`](https://github.com/nvim-treesitter/nvim-treesitter/tree/main) plugin.
 

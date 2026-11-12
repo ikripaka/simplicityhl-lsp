@@ -620,8 +620,10 @@ impl Backend {
         let extension = path.extension();
 
         if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("simpl")) {
-            // Ignore `.simpl` files on change and pass them (we enable only textmate analysis).
-            // todo: add on change and validate .simf files like witness or simplicityhl does
+            // Raw Simplicity highlighting reads the current buffer directly; diagnostics
+            // are not implemented yet, so do not send it through SimplicityHL analysis.
+            // TODO: Ignore `.simpl` files on change and pass them (we enable only textmate analysis).
+            //  add on change and validate .simf files like witness or simplicityhl does
             return;
         }
 

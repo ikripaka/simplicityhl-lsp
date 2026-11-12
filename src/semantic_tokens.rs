@@ -1,5 +1,6 @@
+use logos::Logos;
 use miniscript::iter::TreeLike;
-use simplicity::human_encoding::{lex, TokenKind};
+use simplicity::human_encoding::Token as SimplicityToken;
 use simplicityhl::error::Span;
 use simplicityhl::parse;
 use tower_lsp_server::lsp_types::{
@@ -88,15 +89,44 @@ pub fn simplicity_tokens(source: &str) -> Vec<SemanticToken> {
     let mut column = 0;
     let mut previous_end = 0;
 
-    encode_sorted(lex(source).filter_map(|(kind, span)| {
-        let token_type = match kind {
-            TokenKind::Comment => token_type::COMMENT,
-            TokenKind::Keyword | TokenKind::Wildcard => token_type::KEYWORD,
-            TokenKind::Jet => token_type::FUNCTION,
-            TokenKind::Number => token_type::NUMBER,
-            TokenKind::Type => token_type::TYPE,
-            TokenKind::Operator => token_type::OPERATOR,
-            TokenKind::Symbol => token_type::VARIABLE,
+    let tokens = SimplicityToken::lexer(source).spanned();
+    encode_sorted(tokens.filter_map(|(token, span)| {
+        let token_type = match token.ok()? {
+            SimplicityToken::Comment => token_type::COMMENT,
+            SimplicityToken::Const
+            | SimplicityToken::AssertL
+            | SimplicityToken::AssertR
+            | SimplicityToken::Fail
+            | SimplicityToken::Disconnect
+            | SimplicityToken::Case
+            | SimplicityToken::Comp
+            | SimplicityToken::Pair
+            | SimplicityToken::InjL
+            | SimplicityToken::InjR
+            | SimplicityToken::Take
+            | SimplicityToken::Drop
+            | SimplicityToken::Unit
+            | SimplicityToken::Iden
+            | SimplicityToken::Witness
+            | SimplicityToken::Underscore => token_type::KEYWORD,
+            SimplicityToken::Jet(_) => token_type::FUNCTION,
+            SimplicityToken::BinLiteral(_)
+            | SimplicityToken::HexLiteral(_)
+            | SimplicityToken::CmrLiteral(_) => token_type::NUMBER,
+            SimplicityToken::One | SimplicityToken::Two | SimplicityToken::TwoExp(_) => {
+                token_type::TYPE
+            }
+            SimplicityToken::Assign
+            | SimplicityToken::Arrow
+            | SimplicityToken::HashBrace
+            | SimplicityToken::LParen
+            | SimplicityToken::RParen
+            | SimplicityToken::Plus
+            | SimplicityToken::Star
+            | SimplicityToken::Colon
+            | SimplicityToken::RBrace
+            | SimplicityToken::Question => token_type::OPERATOR,
+            SimplicityToken::Symbol(_) => token_type::VARIABLE,
             _ => return None,
         };
 
@@ -300,6 +330,49 @@ mod tests {
             kind,
             0,
         )
+    }
+
+    // TODO: remove those weird smiles
+    #[test]
+    fn raw_simplicity_positions_use_utf16_with_lf_and_crlf() {
+        for newline in ["\n", "\r\n"] {
+            let source = format!("-- café 😀{newline}{newline}  main := unit -- ✅{newline}");
+            assert_eq!(
+                decode(&simplicity_tokens(&source)),
+                vec![
+                    (0, 0, 10, token_type::COMMENT, 0),
+                    (2, 2, 4, token_type::VARIABLE, 0),
+                    (2, 7, 2, token_type::OPERATOR, 0),
+                    (2, 10, 4, token_type::KEYWORD, 0),
+                    (2, 15, 4, token_type::COMMENT, 0),
+                ],
+                "newline {newline:?}"
+            );
+        }
+    }
+
+    // TODO: remove those weird smiles
+    #[test]
+    fn raw_simplicity_highlights_incomplete_and_invalid_input() {
+        for newline in ["\n", "\r\n"] {
+            // The emoji and '@' are invalid tokens; the open paren is unfinished.
+            // Valid tokens after both must still have their original UTF-16 positions.
+            let source = format!("😀 @ main := comp (jet_verify{newline}  -- still editing 😀");
+            assert_eq!(
+                decode(&simplicity_tokens(&source)),
+                vec![
+                    (0, 5, 4, token_type::VARIABLE, 0),
+                    (0, 10, 2, token_type::OPERATOR, 0),
+                    (0, 13, 4, token_type::KEYWORD, 0),
+                    (0, 18, 1, token_type::OPERATOR, 0),
+                    (0, 19, 10, token_type::FUNCTION, 0),
+                    (1, 2, 19, token_type::COMMENT, 0),
+                ],
+                "newline {newline:?}"
+            );
+        }
+        assert_eq!(simplicity_tokens(""), vec![]);
+        assert_eq!(simplicity_tokens(" \r\n@😀"), vec![]);
     }
 
     #[test]

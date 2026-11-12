@@ -3,9 +3,57 @@ mod support;
 use std::fs;
 
 use serde_json::{json, Value};
+use simplicity::{human_encoding::Forest, jet::Elements};
 use tempfile::TempDir;
+use tower_lsp_server::lsp_types::SemanticTokens;
 
 use support::{file_uri, LspProcess};
+
+fn semantic_token_texts(
+    response: &Value,
+    legend: &Value,
+    source: &str,
+) -> Vec<(usize, usize, String, String)> {
+    assert!(response.get("error").is_none(), "{response}");
+    let tokens: SemanticTokens =
+        serde_json::from_value(response["result"].clone()).expect("semantic tokens");
+    let lines: Vec<Vec<u16>> = source
+        .lines()
+        .map(|line| line.encode_utf16().collect())
+        .collect();
+    let mut line = 0;
+    let mut column = 0;
+    let mut previous_end = 0;
+    tokens
+        .data
+        .iter()
+        .map(|token| {
+            line += token.delta_line as usize;
+            if token.delta_line != 0 {
+                column = 0;
+                previous_end = 0;
+            }
+            column += token.delta_start as usize;
+            let end = column + token.length as usize;
+            assert!(token.length > 0);
+            assert!(column >= previous_end, "overlapping tokens");
+            previous_end = end;
+            let text = lines
+                .get(line)
+                .and_then(|text| text.get(column..end))
+                .expect("token range stays within a source line");
+            (
+                line,
+                column,
+                String::from_utf16(text).expect("token boundaries do not split a surrogate pair"),
+                legend["tokenTypes"][token.token_type as usize]
+                    .as_str()
+                    .expect("token type exists in the advertised legend")
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
 
 #[test]
 fn initialize_response_matches_the_public_protocol_fixture() {
@@ -19,6 +67,156 @@ fn initialize_response_matches_the_public_protocol_fixture() {
 
     assert_eq!(response.get("result"), Some(&expected));
     assert!(response.get("error").is_none());
+    server.shutdown();
+}
+
+#[test]
+fn raw_simplicity_example_gets_semantic_tokens_over_stdio() {
+    let source = include_str!("../examples/verify_equal.simpl");
+    let program = Forest::parse::<Elements>(source).expect("example should parse and type-check");
+    assert!(program.roots().contains_key("main"));
+
+    let root = TempDir::new().expect("workspace");
+    let path = root.path().join("verify_equal.simpl");
+    fs::write(&path, source).expect("example on disk");
+    let uri = file_uri(&path);
+    let mut server = LspProcess::spawn();
+    let initialized = server.initialize(&file_uri(root.path()), &json!({}));
+    let legend = &initialized["result"]["capabilities"]["semanticTokensProvider"]["legend"];
+    server.notify(
+        "textDocument/didOpen",
+        &json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "simplicity",
+                "version": 1,
+                "text": source
+            }
+        }),
+    );
+    let response = server.request(
+        2,
+        "textDocument/semanticTokens/full",
+        &json!({ "textDocument": { "uri": uri } }),
+    );
+    let original_tokens = semantic_token_texts(&response, legend, source);
+    for (text, kind) in [
+        ("-- Verify that two 32-bit words are equal.", "comment"),
+        ("expected", "variable"),
+        ("matches", "variable"),
+        ("main", "variable"),
+        ("const", "keyword"),
+        ("comp", "keyword"),
+        ("pair", "keyword"),
+        ("0x0000002a", "number"),
+        ("1", "type"),
+        ("2", "type"),
+        ("2^32", "type"),
+        (":=", "operator"),
+        (":", "operator"),
+        ("->", "operator"),
+        ("jet_eq_32", "function"),
+        ("jet_verify", "function"),
+    ] {
+        assert!(
+            original_tokens
+                .iter()
+                .any(|token| token.2 == text && token.3 == kind),
+            "missing {kind} token for {text}"
+        );
+    }
+    assert!(original_tokens.contains(&(3, 21, "jet_verify".into(), "function".into())));
+    server.shutdown();
+}
+
+#[test]
+fn raw_simplicity_tokens_follow_unsaved_edits_close_and_reopen() {
+    let source = include_str!("../examples/verify_equal.simpl");
+    let root = TempDir::new().expect("workspace");
+    let path = root.path().join("verify_equal.simpl");
+    fs::write(&path, source).expect("example on disk");
+    let uri = file_uri(&path);
+    let mut server = LspProcess::spawn();
+    let initialized = server.initialize(&file_uri(root.path()), &json!({}));
+    let legend = &initialized["result"]["capabilities"]["semanticTokensProvider"]["legend"];
+    server.notify(
+        "textDocument/didOpen",
+        &json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "simplicity",
+                "version": 1,
+                "text": source
+            }
+        }),
+    );
+    let response = server.request(
+        2,
+        "textDocument/semanticTokens/full",
+        &json!({ "textDocument": { "uri": uri } }),
+    );
+    let original_tokens = semantic_token_texts(&response, legend, source);
+
+    // An unsaved edit shifts every line and leaves an unfinished expression.
+    let edited = format!(
+        "-- 😀 draft\r\n\r\n{}",
+        source
+            .replace("jet_verify", "(jet_verify")
+            .replace('\n', "\r\n")
+    );
+    assert!(Forest::parse::<Elements>(&edited).is_err());
+    server.notify(
+        "textDocument/didChange",
+        &json!({
+            "textDocument": { "uri": uri, "version": 2 },
+            "contentChanges": [{ "text": edited }]
+        }),
+    );
+    let response = server.request(
+        3,
+        "textDocument/semanticTokens/full",
+        &json!({ "textDocument": { "uri": uri } }),
+    );
+    let edited_tokens = semantic_token_texts(&response, legend, &edited);
+    assert!(edited_tokens.contains(&(0, 0, "-- 😀 draft".into(), "comment".into())));
+    assert!(edited_tokens.contains(&(5, 22, "jet_verify".into(), "function".into())));
+    assert_eq!(
+        fs::read_to_string(&path).expect("unchanged disk contents"),
+        source
+    );
+
+    server.notify(
+        "textDocument/didClose",
+        &json!({ "textDocument": { "uri": uri } }),
+    );
+    let response = server.request(
+        4,
+        "textDocument/semanticTokens/full",
+        &json!({ "textDocument": { "uri": uri } }),
+    );
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(response.get("result"), Some(&Value::Null));
+
+    server.notify(
+        "textDocument/didOpen",
+        &json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "simplicity",
+                "version": 1,
+                "text": source
+            }
+        }),
+    );
+    let response = server.request(
+        5,
+        "textDocument/semanticTokens/full",
+        &json!({ "textDocument": { "uri": uri } }),
+    );
+    assert_eq!(
+        semantic_token_texts(&response, legend, source),
+        original_tokens
+    );
     server.shutdown();
 }
 
